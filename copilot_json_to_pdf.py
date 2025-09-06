@@ -245,8 +245,9 @@ class CopilotChatPDF:
         # Inline code
         content = re.sub(r'`([^`]+)`', r'<font name="Courier">\1</font>', content)
         
-        # Headers
-        content = re.sub(r'^### (.*?)$', r'<b>\1</b>', content, flags=re.MULTILINE)
+        # Headers - process in order from most specific to least specific to avoid conflicts
+        content = re.sub(r'^#### (.*?)$', r'<font size="10"><b>\1</b></font>', content, flags=re.MULTILINE)
+        content = re.sub(r'^### (.*?)$', r'<font size="11"><b>\1</b></font>', content, flags=re.MULTILINE)
         content = re.sub(r'^## (.*?)$', r'<font size="12"><b>\1</b></font>', content, flags=re.MULTILINE)
         content = re.sub(r'^# (.*?)$', r'<font size="14"><b>\1</b></font>', content, flags=re.MULTILINE)
         
@@ -268,15 +269,12 @@ class CopilotChatPDF:
             # Get the parts before and after the code block
             start = match.start()
             end = match.end()
-            
             # Extract language and code, preserving whitespace
             language = match.group(1).strip() if match.group(1) else ''
             code = match.group(2)  # This preserves indentation
-            
             # Create a unique ID for this block
             block_id = f"TEXT_{self.code_counter}"
             self.code_counter += 1
-            
             # Store the code block
             code_blocks.append({
                 'id': block_id,
@@ -286,7 +284,6 @@ class CopilotChatPDF:
                 'start_pos': start,
                 'end_pos': end
             })
-        
         return code_blocks
     
     def _extract_code_blocks_from_response(self, response_parts):
@@ -318,9 +315,7 @@ class CopilotChatPDF:
         # Check if there's metadata with code blocks
         if ('result' in request and 'metadata' in request['result'] and 
             'codeBlocks' in request['result']['metadata']):
-            
             metadata_blocks = request['result']['metadata']['codeBlocks']
-            
             for block in metadata_blocks:
                 if 'code' in block:
                     block_id = f"META_{self.code_counter}"
@@ -334,7 +329,6 @@ class CopilotChatPDF:
                         'markdownBeforeBlock': block.get('markdownBeforeBlock', ''),
                         'resource': block.get('resource', None)
                     })
-        
         return code_blocks
     
     def _add_title_page(self, chat_data):
@@ -405,7 +399,6 @@ class CopilotChatPDF:
             if 'timestamp' in request:
                 timestamp = datetime.fromtimestamp(request['timestamp'] / 1000)
                 header_text += f" - {timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
-            
             self.story.append(Paragraph(header_text, self.styles['ChatHeader']))
             
             # Add user message
@@ -442,7 +435,6 @@ class CopilotChatPDF:
                                 'type': 'text',
                                 'content': text[current_pos:match.start()]
                             })
-                        
                         # Add the code block
                         block_id = match.group(1)
                         if block_id in block_map:
@@ -473,11 +465,8 @@ class CopilotChatPDF:
                             code = segment['block']['code']
                             language = segment['block'].get('language', '')
                             self._add_code_block_flowable(code, language)
-                
-                # If there was no text content, process any metadata code blocks
                 elif metadata_code_blocks:
                     self.story.append(Paragraph("<b>Assistant:</b>", self.styles['AssistantMessage']))
-                    
                     for block in metadata_code_blocks:
                         # Add code block using the custom flowable
                         code = block['code']
@@ -503,8 +492,7 @@ class CopilotChatPDF:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Convert VSCode GitHub Copilot chat JSON export to PDF'
-    )
+        description='Convert VSCode GitHub Copilot chat JSON export to PDF')
     parser.add_argument('input_json', help='Input JSON file path')
     parser.add_argument('output_pdf', help='Output PDF file path')
     parser.add_argument('--page-size', choices=['letter', 'a4'], default='letter',
@@ -517,7 +505,6 @@ def main():
     if not input_path.exists():
         print(f"Error: Input file '{args.input_json}' does not exist.")
         return 1
-    
     if not input_path.suffix.lower() == '.json':
         print("Warning: Input file does not have .json extension.")
     
