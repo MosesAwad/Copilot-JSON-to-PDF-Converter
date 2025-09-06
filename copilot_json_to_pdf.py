@@ -377,15 +377,10 @@ class CopilotChatPDF:
         # Get the assistant message style
         assistant_style = self.styles['AssistantMessage']
         
-        # EXACT MATCH FIX: We need to make the code block EXACTLY the same width
-        # Calculate the total document width
+        # IMPORTANT: Calculate the document width
         doc_width = self.doc.width
         
-        # Account for border padding in the assistant style
-        border_padding = assistant_style.borderPadding * 2 if hasattr(assistant_style, 'borderPadding') else 0
-        
-        # Precisely calculate content width to match assistant messages exactly
-        # Increase the compensation from +2 to +8 for better width matching
+        # Calculate width with compensation
         content_width = doc_width - assistant_style.leftIndent - assistant_style.rightIndent + 8
         
         # Create code block with perfect width and positioning
@@ -396,9 +391,12 @@ class CopilotChatPDF:
             indent=assistant_style.leftIndent
         )
         
-        # Add the code block directly
+        # Add the code block
         self.story.append(code_block)
-        self.story.append(Spacer(1, 6))
+        
+        # Add MORE spacing after the code block to prevent the bottom border from being covered
+        # Increase from 6 to 15 points of spacing
+        self.story.append(Spacer(1, 15))
     
     def convert(self):
         """Convert the JSON chat to PDF"""
