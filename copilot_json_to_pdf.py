@@ -48,6 +48,8 @@ class CopilotChatPDF:
                                    topMargin=72, bottomMargin=18)
         self.styles = getSampleStyleSheet()
         self.story = []
+        self.code_counter = 0  # Counter to track code blocks
+        self.processed_metadata_blocks = set()  # Keep track of processed metadata blocks
         self._setup_custom_styles()
     
     def _setup_custom_styles(self):
@@ -80,7 +82,7 @@ class CopilotChatPDF:
             backColor=HexColor('#F9FFF9')
         ))
         
-        # Code block style
+        # Code block style - updated for proper indentation
         self.styles.add(ParagraphStyle(
             name='CodeBlock',
             parent=self.styles['Code'],
@@ -92,7 +94,18 @@ class CopilotChatPDF:
             borderWidth=1,
             borderColor=grey,
             borderPadding=8,
-            backColor=HexColor('#F5F5F5')
+            backColor=HexColor('#F5F5F5'),
+            firstLineIndent=0  # Crucial for indentation
+        ))
+        
+        # Language label style
+        self.styles.add(ParagraphStyle(
+            name='CodeLanguage',
+            parent=self.styles['Normal'],
+            fontSize=8,
+            textColor=HexColor('#555555'),
+            leftIndent=20,
+            spaceAfter=3
         ))
         
         # Chat header style
@@ -127,24 +140,6 @@ class CopilotChatPDF:
         text = text.replace("'", '&#x27;')
         return text
     
-    def _format_code_block(self, code, language=''):
-        """Format code block with syntax highlighting if available"""
-        if not code.strip():
-            return ""
-        
-        # Clean the code
-        code = code.strip()
-        
-        # Create a simple formatted code block
-        formatted_code = self._escape_html(code)
-        
-        # Add language label if provided
-        if language:
-            language_label = f"<font color='blue'>{language}</font><br/>"
-            formatted_code = language_label + formatted_code
-        
-        return f"<font name='Courier' size='9'>{formatted_code}</font>"
-    
     def _process_message_content(self, content):
         """Process message content, handling markdown-like formatting"""
         if not content:
@@ -172,47 +167,87 @@ class CopilotChatPDF:
         
         return content
     
-    def _extract_code_blocks_from_response(self, response_parts):
-        """Extract code blocks from response parts"""
+    def _get_code_blocks_from_metadata(self, request):
+        """Extract code blocks from request metadata"""
         code_blocks = []
-        current_text = ""
         
+        # Check if there's metadata with code blocks
+        if ('result' in request and 'metadata' in request['result'] and 
+            'codeBlocks' in request['result']['metadata']):
+            
+            metadata_blocks = request['result']['metadata']['codeBlocks']
+            
+            for block in metadata_blocks:
+                if 'code' in block:
+                    block_id = f"META_{self.code_counter}"
+                    self.code_counter += 1
+                    
+                    code_blocks.append({
+                        'id': block_id,
+                        'code': block['code'],
+                        'language': block.get('language', ''),
+                        'source': 'metadata',
+                        'markdownBeforeBlock': block.get('markdownBeforeBlock', ''),
+                        'resource': block.get('resource', None)
+                    })
+        
+        return code_blocks
+    
+    def _extract_code_blocks_from_text(self, text):
+        """Extract code blocks from text content with proper indentation preservation"""
+        code_blocks = []
+        remaining_text = text
+        
+        # Pattern to match code blocks with triple backticks
+        pattern = r'```(\w*)\n(.*?)\n```'
+        
+        # Find all code blocks in the text
+        for match in re.finditer(pattern, text, re.DOTALL):
+            # Get the parts before and after the code block
+            start = match.start()
+            end = match.end()
+            
+            # Extract language and code, preserving whitespace
+            language = match.group(1).strip() if match.group(1) else ''
+            code = match.group(2)  # This preserves indentation
+            
+            # Create a unique ID for this block
+            block_id = f"TEXT_{self.code_counter}"
+            self.code_counter += 1
+            
+            # Store the code block
+            code_blocks.append({
+                'id': block_id,
+                'code': code,
+                'language': language,
+                'source': 'text',
+                'start_pos': start,
+                'end_pos': end
+            })
+        
+        return code_blocks
+    
+    def _extract_code_blocks_from_response(self, response_parts):
+        """Process response parts to extract text content and code blocks"""
+        full_text = ""
         for part in response_parts:
-            if isinstance(part, dict):
-                if part.get('kind') == 'codeblockUri':
-                    # This indicates a code block is coming
-                    continue
-                elif 'value' in part:
-                    text = part['value']
-                    
-                    # Look for code blocks in the text
-                    code_block_pattern = r'```(\w+)?\n(.*?)\n```'
-                    matches = re.finditer(code_block_pattern, text, re.DOTALL)
-                    
-                    last_end = 0
-                    for match in matches:
-                        # Add text before code block
-                        current_text += text[last_end:match.start()]
-                        
-                        # Extract code block
-                        language = match.group(1) or ''
-                        code = match.group(2)
-                        code_blocks.append({
-                            'language': language,
-                            'code': code,
-                            'position': len(current_text)
-                        })
-                        
-                        # Add placeholder for code block
-                        current_text += f"[CODE_BLOCK_{len(code_blocks)-1}]"
-                        last_end = match.end()
-                    
-                    # Add remaining text
-                    current_text += text[last_end:]
+            if isinstance(part, dict) and 'value' in part:
+                full_text += part['value']
             elif isinstance(part, str):
-                current_text += part
+                full_text += part
         
-        return current_text, code_blocks
+        # Extract code blocks from the full text
+        code_blocks = self._extract_code_blocks_from_text(full_text)
+        
+        # Replace code blocks with placeholders
+        processed_text = full_text
+        for block in reversed(code_blocks):  # Process in reverse to maintain positions
+            start = block['start_pos']
+            end = block['end_pos']
+            placeholder = f"[CODE_BLOCK_{block['id']}]"
+            processed_text = processed_text[:start] + placeholder + processed_text[end:]
+        
+        return processed_text, code_blocks
     
     def _add_title_page(self, chat_data):
         """Add a title page to the PDF"""
@@ -250,6 +285,30 @@ class CopilotChatPDF:
         
         self.story.append(PageBreak())
     
+    def _add_code_block_to_story(self, code_block):
+        """Add a code block to the PDF story with proper formatting and indentation"""
+        # Add language label if available
+        if code_block.get('language'):
+            self.story.append(Paragraph(
+                f"<i>{code_block['language']}</i>", 
+                self.styles['CodeLanguage']
+            ))
+        
+        # Add filepath if available from resource
+        if 'resource' in code_block and code_block['resource']:
+            filepath = code_block['resource'].get('path', '')
+            if filepath:
+                self.story.append(Paragraph(
+                    f"<i>// filepath: {filepath}</i>", 
+                    self.styles['CodeLanguage']
+                ))
+        
+        # Add the code with preserved indentation
+        code = code_block['code']
+        
+        # Use Preformatted to preserve whitespace exactly
+        self.story.append(Preformatted(code, self.styles['CodeBlock']))
+    
     def convert(self):
         """Convert the JSON chat to PDF"""
         try:
@@ -266,6 +325,10 @@ class CopilotChatPDF:
         requests = chat_data.get('requests', [])
         
         for i, request in enumerate(requests):
+            # Reset code counter for each message
+            self.code_counter = 0
+            self.processed_metadata_blocks.clear()
+            
             # Add request number header
             header_text = f"Message {i + 1}"
             if 'timestamp' in request:
@@ -282,43 +345,70 @@ class CopilotChatPDF:
                                           self.styles['UserMessage']))
                 self.story.append(Spacer(1, 6))
             
-            # Add assistant response
+            # Process assistant response
             response_parts = request.get('response', [])
             if response_parts:
-                response_text, code_blocks = self._extract_code_blocks_from_response(response_parts)
+                # Extract text and code blocks from response
+                text, text_code_blocks = self._extract_code_blocks_from_response(response_parts)
                 
-                if response_text:
-                    # Process the response text and insert code blocks
-                    for j, code_block in enumerate(code_blocks):
-                        placeholder = f"[CODE_BLOCK_{j}]"
-                        if placeholder in response_text:
-                            # Split text at placeholder and add code block
-                            parts = response_text.split(placeholder, 1)
-                            if parts[0]:
-                                processed_text = self._process_message_content(parts[0])
-                                self.story.append(Paragraph(f"<b>Assistant:</b> {processed_text}", 
-                                                          self.styles['AssistantMessage']))
-                            
-                            # Add code block
-                            formatted_code = self._format_code_block(
-                                code_block['code'], 
-                                code_block.get('language', '')
-                            )
-                            self.story.append(Preformatted(code_block['code'], 
-                                                         self.styles['CodeBlock']))
-                            
-                            response_text = parts[1] if len(parts) > 1 else ""
+                # Get metadata code blocks 
+                metadata_code_blocks = self._get_code_blocks_from_metadata(request)
+                
+                # First, handle the text content with embedded code blocks
+                if text:
+                    # Split the text at code block placeholders
+                    segments = []
+                    current_pos = 0
+                    
+                    # Create a map of block IDs to blocks
+                    block_map = {block['id']: block for block in text_code_blocks}
+                    
+                    # Find all code block placeholders in the text
+                    for match in re.finditer(r'\[CODE_BLOCK_(TEXT_\d+)\]', text):
+                        # Add text before the placeholder
+                        if match.start() > current_pos:
+                            segments.append({
+                                'type': 'text',
+                                'content': text[current_pos:match.start()]
+                            })
+                        
+                        # Add the code block
+                        block_id = match.group(1)
+                        if block_id in block_map:
+                            segments.append({
+                                'type': 'code',
+                                'block': block_map[block_id]
+                            })
+                        
+                        current_pos = match.end()
                     
                     # Add any remaining text
-                    if response_text:
-                        processed_text = self._process_message_content(response_text)
-                        self.story.append(Paragraph(f"<b>Assistant:</b> {processed_text}", 
-                                                  self.styles['AssistantMessage']))
+                    if current_pos < len(text):
+                        segments.append({
+                            'type': 'text',
+                            'content': text[current_pos:]
+                        })
+                    
+                    # Process segments in order
+                    for segment in segments:
+                        if segment['type'] == 'text':
+                            processed_text = self._process_message_content(segment['content'])
+                            if processed_text.strip():  # Only add non-empty text
+                                self.story.append(Paragraph(f"<b>Assistant:</b> {processed_text}", 
+                                                        self.styles['AssistantMessage']))
+                        elif segment['type'] == 'code':
+                            self._add_code_block_to_story(segment['block'])
+                
+                # Add any metadata code blocks that weren't already in the text
+                # We'll only do this if requested by a flag or if there was no text content
+                if not text or len(text.strip()) == 0:
+                    for block in metadata_code_blocks:
+                        self._add_code_block_to_story(block)
             
             # Add spacing between conversations
             self.story.append(Spacer(1, 20))
             
-            # Add page break every few messages to prevent overly long pages
+            # Add page break every few messages
             if (i + 1) % 3 == 0 and i < len(requests) - 1:
                 self.story.append(PageBreak())
         
@@ -339,7 +429,7 @@ def main():
     parser.add_argument('input_json', help='Input JSON file path')
     parser.add_argument('output_pdf', help='Output PDF file path')
     parser.add_argument('--page-size', choices=['letter', 'a4'], default='letter',
-                       help='PDF page size (default: letter)')
+                        help='PDF page size (default: letter)')
     
     args = parser.parse_args()
     
