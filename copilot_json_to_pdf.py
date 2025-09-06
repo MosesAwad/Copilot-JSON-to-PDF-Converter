@@ -23,7 +23,7 @@ from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib.colors import HexColor, black, grey, darkblue, darkgreen
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Preformatted, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Preformatted, PageBreak, Flowable
 from reportlab.platypus.tableofcontents import TableOfContents
 from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
 from reportlab.pdfgen import canvas
@@ -36,6 +36,77 @@ try:
 except ImportError:
     PYGMENTS_AVAILABLE = False
     print("Warning: pygments not available. Code syntax highlighting will be disabled.")
+
+
+class CodeBlockFlowable(Flowable):
+    """A custom flowable that renders code blocks with proper formatting and borders"""
+    
+    def __init__(self, code_text, language=None, width=500, font_name='Courier', font_size=9):
+        Flowable.__init__(self)
+        self.code_text = code_text
+        self.language = language
+        self.width = width
+        self.font_name = font_name
+        self.font_size = font_size
+        
+        # Calculate height based on number of lines and font size
+        self.lines = code_text.split('\n')
+        line_height = font_size * 1.2  # 1.2 is a common line height multiplier
+        self.height = (len(self.lines) + 2) * line_height + 20  # +2 for padding and extra for safety
+        
+        # Border and background colors - distinctive dark green
+        self.border_color = HexColor('#2E8B57')  # Dark green border
+        self.background_color = HexColor('#D4E9D4')  # Lighter green background
+        
+    def draw(self):
+        """Draw the code block with border and background"""
+        canvas = self.canv
+        
+        # Save canvas state
+        canvas.saveState()
+        
+        # Draw background
+        canvas.setFillColor(self.background_color)
+        canvas.rect(0, 0, self.width, self.height, fill=1, stroke=0)
+        
+        # Draw border - thick and visible
+        canvas.setStrokeColor(self.border_color)
+        canvas.setLineWidth(2)
+        canvas.rect(0, 0, self.width, self.height, fill=0, stroke=1)
+        
+        # Draw language label if provided
+        if self.language:
+            canvas.setFont('Helvetica-Oblique', self.font_size)
+            canvas.setFillColor(HexColor('#2C5282'))  # Dark blue for language label
+            canvas.drawString(10, self.height - 15, self.language)
+        
+        # Draw code text
+        y = self.height - 30 if self.language else self.height - 15
+        canvas.setFont(self.font_name, self.font_size)
+        canvas.setFillColor(HexColor('#333333'))  # Dark gray for code
+        
+        for line in self.lines:
+            # Calculate proper indentation
+            indent = 0
+            for char in line:
+                if char == ' ':
+                    indent += 1
+                elif char == '\t':
+                    indent += 4  # Standard tab width
+                else:
+                    break
+                    
+            # Draw the line with proper indentation
+            canvas.drawString(10 + indent * 4, y, line.lstrip())  # 4 points per space
+            y -= self.font_size * 1.2
+        
+        # Restore canvas state
+        canvas.restoreState()
+    
+    def wrap(self, availWidth, availHeight):
+        """Return the size this flowable will take up"""
+        self.width = min(self.width, availWidth)
+        return (self.width, self.height)
 
 
 class CopilotChatPDF:
@@ -68,7 +139,7 @@ class CopilotChatPDF:
             backColor=HexColor('#F8F9FA')
         ))
         
-        # Assistant message style
+        # Assistant message style - updated to handle code blocks properly
         self.styles.add(ParagraphStyle(
             name='AssistantMessage',
             parent=self.styles['Normal'],
@@ -80,6 +151,23 @@ class CopilotChatPDF:
             borderColor=HexColor('#E8F5E8'),
             borderPadding=8,
             backColor=HexColor('#F9FFF9')
+        ))
+        
+        # Nested code block style - for code within the assistant message
+        self.styles.add(ParagraphStyle(
+            name='NestedCodeBlock',
+            parent=self.styles['Code'],
+            fontSize=9,
+            fontName='Courier',
+            leftIndent=0,
+            rightIndent=0,
+            spaceBefore=6,
+            spaceAfter=6,
+            backColor=HexColor('#F5F5F5'),
+            borderColor=grey,
+            borderWidth=1,
+            borderPadding=6,
+            firstLineIndent=0  # Important for indentation
         ))
         
         # Code block style - updated for proper indentation
@@ -167,32 +255,6 @@ class CopilotChatPDF:
         
         return content
     
-    def _get_code_blocks_from_metadata(self, request):
-        """Extract code blocks from request metadata"""
-        code_blocks = []
-        
-        # Check if there's metadata with code blocks
-        if ('result' in request and 'metadata' in request['result'] and 
-            'codeBlocks' in request['result']['metadata']):
-            
-            metadata_blocks = request['result']['metadata']['codeBlocks']
-            
-            for block in metadata_blocks:
-                if 'code' in block:
-                    block_id = f"META_{self.code_counter}"
-                    self.code_counter += 1
-                    
-                    code_blocks.append({
-                        'id': block_id,
-                        'code': block['code'],
-                        'language': block.get('language', ''),
-                        'source': 'metadata',
-                        'markdownBeforeBlock': block.get('markdownBeforeBlock', ''),
-                        'resource': block.get('resource', None)
-                    })
-        
-        return code_blocks
-    
     def _extract_code_blocks_from_text(self, text):
         """Extract code blocks from text content with proper indentation preservation"""
         code_blocks = []
@@ -249,6 +311,32 @@ class CopilotChatPDF:
         
         return processed_text, code_blocks
     
+    def _get_code_blocks_from_metadata(self, request):
+        """Extract code blocks from request metadata"""
+        code_blocks = []
+        
+        # Check if there's metadata with code blocks
+        if ('result' in request and 'metadata' in request['result'] and 
+            'codeBlocks' in request['result']['metadata']):
+            
+            metadata_blocks = request['result']['metadata']['codeBlocks']
+            
+            for block in metadata_blocks:
+                if 'code' in block:
+                    block_id = f"META_{self.code_counter}"
+                    self.code_counter += 1
+                    
+                    code_blocks.append({
+                        'id': block_id,
+                        'code': block['code'],
+                        'language': block.get('language', ''),
+                        'source': 'metadata',
+                        'markdownBeforeBlock': block.get('markdownBeforeBlock', ''),
+                        'resource': block.get('resource', None)
+                    })
+        
+        return code_blocks
+    
     def _add_title_page(self, chat_data):
         """Add a title page to the PDF"""
         title_style = ParagraphStyle(
@@ -285,29 +373,12 @@ class CopilotChatPDF:
         
         self.story.append(PageBreak())
     
-    def _add_code_block_to_story(self, code_block):
-        """Add a code block to the PDF story with proper formatting and indentation"""
-        # Add language label if available
-        if code_block.get('language'):
-            self.story.append(Paragraph(
-                f"<i>{code_block['language']}</i>", 
-                self.styles['CodeLanguage']
-            ))
-        
-        # Add filepath if available from resource
-        if 'resource' in code_block and code_block['resource']:
-            filepath = code_block['resource'].get('path', '')
-            if filepath:
-                self.story.append(Paragraph(
-                    f"<i>// filepath: {filepath}</i>", 
-                    self.styles['CodeLanguage']
-                ))
-        
-        # Add the code with preserved indentation
-        code = code_block['code']
-        
-        # Use Preformatted to preserve whitespace exactly
-        self.story.append(Preformatted(code, self.styles['CodeBlock']))
+    def _add_code_block_flowable(self, code, language=None):
+        """Add a custom code block flowable to the story"""
+        available_width = self.doc.width - 40  # Account for margins
+        code_block = CodeBlockFlowable(code, language, width=available_width)
+        self.story.append(code_block)
+        self.story.append(Spacer(1, 6))
     
     def convert(self):
         """Convert the JSON chat to PDF"""
@@ -351,17 +422,17 @@ class CopilotChatPDF:
                 # Extract text and code blocks from response
                 text, text_code_blocks = self._extract_code_blocks_from_response(response_parts)
                 
-                # Get metadata code blocks 
+                # Get metadata code blocks
                 metadata_code_blocks = self._get_code_blocks_from_metadata(request)
                 
-                # First, handle the text content with embedded code blocks
+                # Handle text and code blocks in separate elements
                 if text:
+                    # Create a map of block IDs to blocks
+                    block_map = {block['id']: block for block in text_code_blocks}
+                    
                     # Split the text at code block placeholders
                     segments = []
                     current_pos = 0
-                    
-                    # Create a map of block IDs to blocks
-                    block_map = {block['id']: block for block in text_code_blocks}
                     
                     # Find all code block placeholders in the text
                     for match in re.finditer(r'\[CODE_BLOCK_(TEXT_\d+)\]', text):
@@ -389,21 +460,29 @@ class CopilotChatPDF:
                             'content': text[current_pos:]
                         })
                     
+                    # Start with assistant intro
+                    self.story.append(Paragraph("<b>Assistant:</b>", self.styles['AssistantMessage']))
+                    
                     # Process segments in order
                     for segment in segments:
                         if segment['type'] == 'text':
                             processed_text = self._process_message_content(segment['content'])
                             if processed_text.strip():  # Only add non-empty text
-                                self.story.append(Paragraph(f"<b>Assistant:</b> {processed_text}", 
-                                                        self.styles['AssistantMessage']))
+                                self.story.append(Paragraph(processed_text, self.styles['AssistantMessage']))
                         elif segment['type'] == 'code':
-                            self._add_code_block_to_story(segment['block'])
+                            code = segment['block']['code']
+                            language = segment['block'].get('language', '')
+                            self._add_code_block_flowable(code, language)
                 
-                # Add any metadata code blocks that weren't already in the text
-                # We'll only do this if requested by a flag or if there was no text content
-                if not text or len(text.strip()) == 0:
+                # If there was no text content, process any metadata code blocks
+                elif metadata_code_blocks:
+                    self.story.append(Paragraph("<b>Assistant:</b>", self.styles['AssistantMessage']))
+                    
                     for block in metadata_code_blocks:
-                        self._add_code_block_to_story(block)
+                        # Add code block using the custom flowable
+                        code = block['code']
+                        language = block.get('language', '')
+                        self._add_code_block_flowable(code, language)
             
             # Add spacing between conversations
             self.story.append(Spacer(1, 20))
