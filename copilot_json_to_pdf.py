@@ -41,13 +41,14 @@ except ImportError:
 class CodeBlockFlowable(Flowable):
     """A custom flowable that renders code blocks with proper formatting and borders"""
     
-    def __init__(self, code_text, language=None, width=500, font_name='Courier', font_size=9):
+    def __init__(self, code_text, language=None, width=500, font_name='Courier', font_size=9, indent=0):
         Flowable.__init__(self)
         self.code_text = code_text
         self.language = language
         self.width = width
         self.font_name = font_name
         self.font_size = font_size
+        self.indent = indent  # Store the indentation value
         
         # Calculate height based on number of lines and font size
         self.lines = code_text.split('\n')
@@ -57,13 +58,16 @@ class CodeBlockFlowable(Flowable):
         # Border and background colors - distinctive dark green
         self.border_color = HexColor('#2E8B57')  # Dark green border
         self.background_color = HexColor('#D4E9D4')  # Lighter green background
-        
+    
     def draw(self):
         """Draw the code block with border and background"""
         canvas = self.canv
         
         # Save canvas state
         canvas.saveState()
+        
+        # Apply horizontal indentation to match assistant messages - no extra indentation
+        canvas.translate(self.indent, 0)
         
         # Draw background
         canvas.setFillColor(self.background_color)
@@ -85,19 +89,20 @@ class CodeBlockFlowable(Flowable):
         canvas.setFont(self.font_name, self.font_size)
         canvas.setFillColor(HexColor('#333333'))  # Dark gray for code
         
+        # Draw each line of code with no extra indentation beyond what's in the code
         for line in self.lines:
-            # Calculate proper indentation
-            indent = 0
+            # Calculate proper indentation from the code itself
+            code_indent = 0
             for char in line:
                 if char == ' ':
-                    indent += 1
+                    code_indent += 1
                 elif char == '\t':
-                    indent += 4  # Standard tab width
+                    code_indent += 4  # Standard tab width
                 else:
                     break
                     
-            # Draw the line with proper indentation
-            canvas.drawString(10 + indent * 4, y, line.lstrip())  # 4 points per space
+            # Draw the line with proper indentation - use minimal indent
+            canvas.drawString(10 + code_indent * 4, y, line.lstrip())
             y -= self.font_size * 1.2
         
         # Restore canvas state
@@ -105,8 +110,8 @@ class CodeBlockFlowable(Flowable):
     
     def wrap(self, availWidth, availHeight):
         """Return the size this flowable will take up"""
-        self.width = min(self.width, availWidth)
-        return (self.width, self.height)
+        self.width = min(self.width, availWidth - self.indent)
+        return (self.width + self.indent, self.height)
 
 
 class CopilotChatPDF:
@@ -369,8 +374,29 @@ class CopilotChatPDF:
     
     def _add_code_block_flowable(self, code, language=None):
         """Add a custom code block flowable to the story"""
-        available_width = self.doc.width - 40  # Account for margins
-        code_block = CodeBlockFlowable(code, language, width=available_width)
+        # Get the assistant message style
+        assistant_style = self.styles['AssistantMessage']
+        
+        # EXACT MATCH FIX: We need to make the code block EXACTLY the same width
+        # Calculate the total document width
+        doc_width = self.doc.width
+        
+        # Account for border padding in the assistant style
+        border_padding = assistant_style.borderPadding * 2 if hasattr(assistant_style, 'borderPadding') else 0
+        
+        # Precisely calculate content width to match assistant messages exactly
+        # Increase the compensation from +2 to +8 for better width matching
+        content_width = doc_width - assistant_style.leftIndent - assistant_style.rightIndent + 8
+        
+        # Create code block with perfect width and positioning
+        code_block = CodeBlockFlowable(
+            code, 
+            language, 
+            width=content_width,
+            indent=assistant_style.leftIndent
+        )
+        
+        # Add the code block directly
         self.story.append(code_block)
         self.story.append(Spacer(1, 6))
     
